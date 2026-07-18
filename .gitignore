@@ -1,0 +1,27 @@
+# ── Raw bulk data (huge, re-downloadable from Companies House) ──
+data/
+
+# ── Derived caches (rebuilt by rebuild_caches.sh; register + PSC caches MUST NOT be committed) ──
+cache/
+
+# ── Generated output / hand-off files (produced by every pull) ──
+out/
+
+# ── Secrets & environment ──
+.env
+.env.local
+.zshenv
+*.key
+secrets*.json
+
+# ── Logs & derived ──
+*.log
+
+# ── OS / editor / local tooling ──
+.DS_Store
+.claude/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
