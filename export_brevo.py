@@ -130,31 +130,55 @@ def main():
             continue
         if c["independence"] != "INDEPENDENT":
             continue
-        b = rep_branch(c)
         email = best_email(c.get("email", ""))
-        cid = company_id(c["company"], b.get("district", ""))
-        row = {
-            "EMAIL": email, "FIRSTNAME": "", "LASTNAME": "",
-            "COMPANY": clean(c["company"]),
-            "SMS": to_e164(c.get("phone", "")),
-            "WEBSITE": c.get("website", ""),
-            "ADDRESS": clean(b.get("address", "")),
-            "POSTCODE": b.get("postcode", ""),
-            "DISTRICT": b.get("district", ""),
-            "POSTCODE_AREA": b.get("area", ""),
-            "CATEGORY": "Funeral directors",
-            "SOURCE": "+".join(c["sources"]),
-            "SAIF_MEMBER": "Y" if "SAIF" in c["sources"] else "N",
-            "TRADING_BRANDS": trading_brands(c),
-        }
-        # master marketplace record (all independents, incl. web-only, keyed on COMPANY_ID)
-        firms.append({"COMPANY_ID": cid, **row, "AREAS": ",".join(c["areas"]),
-                      "DISTRICTS": ",".join(c["districts"]), "BRAND_COUNT": c.get("brand_count", 1),
-                      "PHONE_RAW": c.get("phone", "")})
-        if email:
-            brevo.append(row)
-        elif row["SMS"]:
-            phone_only.append(row)
+        # ONE ROW PER AREA (not one per firm nationally). A multi-branch firm — e.g. F.A. Albin trading in
+        # SE and DA, or P L Mulligan in SE and DA — must appear once in EACH area it operates in, with that
+        # area's branch address + phone, sharing the same COMPANY_ID root. Branches WITHIN an area still
+        # collapse to one row. (One slot per area per firm — what the slot model assumes.)
+        #
+        # AREAS come from the TRADING branches (SAIF/NAFD addresses) ONLY — never Companies House. CH is for
+        # verification, not location, so a firm filed under its registered-office area (Albin: E13) still
+        # lists under where it actually trades (SE16 → SE, plus DA), not the registered office.
+        tbranches = [b for br in c.get("_brands", []) for b in br.get("branches", [])
+                     if b.get("source") in ("SAIF", "NAFD") and b.get("postcode") and b.get("area")]
+        by_area = {}
+        for b in tbranches:
+            by_area.setdefault(b["area"], []).append(b)
+        if not by_area:                       # rare: no trading branch with a postcode — keep old single-row behaviour
+            rb = rep_branch(c)
+            if rb.get("area"):
+                by_area[rb["area"]] = [rb]
+        def _bscore(b):                        # best branch WITHIN an area for the address/phone shown
+            s = 0
+            if b.get("source") == "SAIF": s += 4
+            if b.get("address"): s += 2
+            if email and (b.get("email") or "").lower().find(email) >= 0: s += 3
+            return s
+        for a, bs in sorted(by_area.items()):
+            b = max(bs, key=_bscore)
+            cid = company_id(c["company"], b.get("district", "") or a)
+            row = {
+                "EMAIL": email, "FIRSTNAME": "", "LASTNAME": "",
+                "COMPANY": clean(c["company"]),
+                "SMS": to_e164(b.get("phone") or c.get("phone", "")),   # THIS area's branch phone
+                "WEBSITE": c.get("website", ""),
+                "ADDRESS": clean(b.get("address", "")),
+                "POSTCODE": b.get("postcode", ""),
+                "DISTRICT": b.get("district", ""),
+                "POSTCODE_AREA": a,
+                "CATEGORY": "Funeral directors",
+                "SOURCE": "+".join(c["sources"]),
+                "SAIF_MEMBER": "Y" if "SAIF" in c["sources"] else "N",
+                "TRADING_BRANDS": trading_brands(c),
+            }
+            # master marketplace record (all independents, incl. web-only, keyed on COMPANY_ID)
+            firms.append({"COMPANY_ID": cid, **row, "AREAS": ",".join(c["areas"]),
+                          "DISTRICTS": ",".join(c["districts"]), "BRAND_COUNT": c.get("brand_count", 1),
+                          "PHONE_RAW": b.get("phone") or c.get("phone", "")})
+            if email:
+                brevo.append(row)
+            elif row["SMS"]:
+                phone_only.append(row)
 
     # dedupe brevo by EMAIL
     seen, dedup = set(), []
