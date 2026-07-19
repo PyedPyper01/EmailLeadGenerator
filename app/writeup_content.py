@@ -9,6 +9,24 @@ FIRMS = os.path.join(HERE, "out", "marketplace_firms.csv")
 OUT = os.path.join(CACHE, "site_content.json")
 CTX = ssl.create_default_context(); CTX.check_hostname=False; CTX.verify_mode=ssl.CERT_NONE
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36"
+FC_KEY = (os.environ.get("FIRECRAWL_API_KEY") or "").strip()
+
+def firecrawl(url):
+    """JS-rendered fallback: many funeral sites are SPA/JS and return no visible HTML text to the
+    plain crawl. Firecrawl renders the page and returns clean markdown. Only used when the free crawl
+    got nothing AND a key is set (metered), so we never spend a credit on a site the crawler could read."""
+    if not FC_KEY:
+        return ""
+    try:
+        body = json.dumps({"url": url, "formats": ["markdown"], "onlyMainContent": False}).encode()
+        req = urllib.request.Request("https://api.firecrawl.dev/v1/scrape", data=body,
+              headers={"Authorization": "Bearer " + FC_KEY, "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=45, context=CTX) as r:
+            d = json.loads(r.read().decode("utf-8", "replace"))
+        md = ((d.get("data") or {}).get("markdown")) or ""
+        return re.sub(r"\s+", " ", md).strip()[:9000]
+    except Exception:
+        return ""
 
 def fetch(url, timeout=12):
     try:
@@ -53,13 +71,26 @@ def crawl(website):
         t = visible_text(fetch(u))
         if t: parts.append(t); pages.append(u)
     text = " \n ".join(parts)[:9000]
+    # JS-rendered fallback: the plain crawl read nothing → let Firecrawl render it (metered, only when needed)
+    if len(text) < 200:
+        fc = firecrawl(origin)
+        if len(fc) > len(text):
+            text = fc
     return {"text": text, "pages": pages, "website": website}
 
 def main():
     firms = list(csv.DictReader(open(FIRMS, encoding="utf-8-sig")))
     cache = json.load(open(OUT)) if os.path.exists(OUT) else {}
-    todo = [f for f in firms if f["WEBSITE"] and f["COMPANY_ID"] not in cache]
-    print(f"Firms: {len(firms)} | with website: {sum(1 for f in firms if f['WEBSITE'])} | to crawl: {len(todo)}", flush=True)
+    # crawl anything uncrawled; plus, when a Firecrawl key is set, RE-crawl cached-but-empty sites
+    # (the JS-rendered ones the plain crawl couldn't read) so they get a Firecrawl pass this run.
+    def needs(f):
+        if not f["WEBSITE"]: return False
+        c = cache.get(f["COMPANY_ID"])
+        if c is None: return True
+        return bool(FC_KEY) and len((c or {}).get("text", "")) < 200
+    todo = [f for f in firms if needs(f)]
+    print(f"Firms: {len(firms)} | with website: {sum(1 for f in firms if f['WEBSITE'])} | "
+          f"to crawl: {len(todo)}{' (incl. empty re-crawl via Firecrawl)' if FC_KEY else ''}", flush=True)
     def one(f):
         cache[f["COMPANY_ID"]] = crawl(f["WEBSITE"])
     for i in range(0, len(todo), 100):
